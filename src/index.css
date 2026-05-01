@@ -1,0 +1,23 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+body {
+  font-family: 'Georgia', serif;
+}
+
+/* Color-blind safe property indicators */
+.property-brown { background-color: #8B4513; }
+.property-light-blue { background-color: #5BA3C9; }
+.property-pink { background-color: #E0559A; }
+.property-orange { background-color: #E07800; }
+.property-red { background-color: #B01030; }
+.property-yellow { background-color: #C5A800; }
+.property-green { background-color: #1A6B1A; }
+.property-dark-blue { background-color: #000066; }
+
+/* Board square pattern */
+.board-square {
+  @apply border border-stone-600 p-1 text-xs;
+  min-height: 80px;
+}
