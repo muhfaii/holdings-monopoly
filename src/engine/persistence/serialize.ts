@@ -1,6 +1,7 @@
 import type { GameState } from '../core/state';
+import { HOUSE_SUPPLY, HOTEL_SUPPLY } from '../data/board';
 
-const CURRENT_VERSION = 2;
+const CURRENT_VERSION = 3;
 
 export function serialize(state: GameState): string {
   return JSON.stringify(state);
@@ -51,6 +52,17 @@ function applyMigration(state: any): any {
           ...state.turn,
           cardRentOverride: state.turn?.cardRentOverride ?? null,
         },
+      };
+      break;
+    }
+
+    case 2: {
+      // v3: add houseSupply and hotelSupply to GameState
+      state = {
+        ...state,
+        version: 3,
+        houseSupply: state.houseSupply ?? HOUSE_SUPPLY,
+        hotelSupply: state.hotelSupply ?? HOTEL_SUPPLY,
       };
       break;
     }

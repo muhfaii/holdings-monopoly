@@ -1,6 +1,11 @@
 import { useGameStore } from '../../store/gameStore';
+import { getBuildableGroups } from '../../engine/rules/buildings';
 
-export function HUD() {
+interface HUDProps {
+  onShowBuild: () => void;
+}
+
+export function HUD({ onShowBuild }: HUDProps) {
   const gameState = useGameStore(s => s.gameState)!;
   const dispatch = useGameStore(s => s.dispatch);
   const currentPlayer = gameState.players[gameState.turn.currentPlayerId];
@@ -11,6 +16,14 @@ export function HUD() {
   );
 
   const { hasRolledThisTurn, jailRoll, pendingDecision } = gameState.turn;
+
+  // Show Build button when: active game, human player's turn, no pending decision,
+  // and the player owns at least one complete monopoly they can build on.
+  const canBuild =
+    gameState.phase === 'active' &&
+    !pendingDecision &&
+    !currentPlayer?.isAI &&
+    getBuildableGroups(gameState, gameState.turn.currentPlayerId).length > 0;
   const lastRollDoubles = diceEvent?.type === 'DICE_ROLLED' && diceEvent.die1 === diceEvent.die2;
   // Can roll if: no pending decision AND (haven't rolled yet, OR rolled doubles outside jail)
   const canRoll =
@@ -55,6 +68,14 @@ export function HUD() {
               className="bg-amber-500 hover:bg-amber-400 text-stone-900 font-bold px-4 py-1.5 rounded text-sm transition-colors"
             >
               Roll Dice
+            </button>
+          )}
+          {canBuild && (
+            <button
+              onClick={onShowBuild}
+              className="bg-green-700 hover:bg-green-600 text-stone-100 px-3 py-1.5 rounded text-sm font-medium transition-colors"
+            >
+              🏠 Build
             </button>
           )}
           {canEndTurn && diceEvent && (

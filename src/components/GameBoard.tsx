@@ -1,19 +1,21 @@
+import { useState } from 'react';
 import { useGameStore } from '../store/gameStore';
 import { Board } from './Board/Board';
 import { PlayerDash } from './Board/PlayerDash';
 import { HUD } from './Board/HUD';
 import { GameLog } from './Board/GameLog';
 import { DecisionModalRouter } from './Modals/DecisionModalRouter';
+import { BuildModal } from './Modals/BuildModal';
 import { useAI } from '../hooks/useAI';
 
 export function GameBoard() {
   const gameState = useGameStore(s => s.gameState)!;
-  const dispatch = useGameStore(s => s.dispatch);
+  const [showBuild, setShowBuild] = useState(false);
   useAI();
 
   return (
     <div className="min-h-screen bg-stone-900 p-2 flex flex-col gap-2">
-      <HUD />
+      <HUD onShowBuild={() => setShowBuild(true)} />
 
       <div className="flex gap-2 flex-1 min-h-0">
         {/* Board: center */}
@@ -36,6 +38,9 @@ export function GameBoard() {
 
       {/* Decision modals */}
       <DecisionModalRouter />
+
+      {/* Build modal (non-blocking, local state) */}
+      {showBuild && <BuildModal onClose={() => setShowBuild(false)} />}
     </div>
   );
 }
