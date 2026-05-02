@@ -32,6 +32,8 @@ export interface Square {
   price: number;
   group?: ColorGroup;
   rentLadder?: number[];
+  /** Cost to buy one house (or upgrade to hotel) on this property. */
+  houseCost?: number;
 }
 
 export interface PlayerState {
@@ -110,6 +112,10 @@ export interface GameState {
   properties: Record<PropertyId, PropertyState>;
   turn: TurnState;
   kopitiamPot: number;
+  /** Remaining houses in the global supply (starts at 32). */
+  houseSupply: number;
+  /** Remaining hotels in the global supply (starts at 12). */
+  hotelSupply: number;
   chanceDeck: DeckState;
   communityChestDeck: DeckState;
   history: GameEvent[];

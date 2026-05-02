@@ -2,13 +2,14 @@ import type { GameState, PlayerId, PlayerState, PropertyState, TurnState } from 
 import type { GameEvent } from './events';
 import type { Action, ActionResult } from './actions';
 import { createRNG, createSeed } from '../rng';
-import { BOARD, GO_SALARY, JAIL_FINE, JAIL_SQUARE, STARTING_CASH } from '../data/board';
+import { BOARD, GO_SALARY, HOUSE_SUPPLY, HOTEL_SUPPLY, JAIL_FINE, JAIL_SQUARE, STARTING_CASH } from '../data/board';
 import { CHANCE_CARDS, COMMUNITY_CHEST_CARDS, CHANCE_GOOJF_INDEX, COMMUNITY_CHEST_GOOJF_INDEX } from '../data/cards';
 import { createSeededDeck, drawCard, discardCard, returnCardToDiscard } from '../rules/deck';
 import { resolveCard, rollDiceForUtility } from '../rules/cards';
 import { rollAndMove } from '../rules/movement';
 import { calculateRent } from '../rules/rent';
 import { detectBankruptcy } from '../rules/bankruptcy';
+import { canBuyHouse, canSellHouse } from '../rules/buildings';
 
 export function reducer(state: GameState, action: Action): ActionResult {
   const events: GameEvent[] = [];
@@ -421,6 +422,100 @@ export function reducer(state: GameState, action: Action): ActionResult {
         break;
       }
 
+      case 'BUY_HOUSE': {
+        const playerId = state.turn.currentPlayerId;
+
+        // Building is only allowed during the player's own turn with no pending decision
+        if (state.turn.pendingDecision) {
+          return { state, events, errors: ['Cannot build while a decision is pending'] };
+        }
+
+        const validation = canBuyHouse(state, playerId, action.propertyId);
+        if (!validation.ok) {
+          return { state, events, errors: [validation.reason ?? 'Cannot build here'] };
+        }
+
+        const square = BOARD[action.propertyId];
+        const houseCost = square.houseCost!;
+        const prop = state.properties[action.propertyId];
+
+        if (prop.houses === 4) {
+          // Upgrade to hotel: 4 houses return to supply, 1 hotel consumed
+          newState = {
+            ...newState,
+            properties: {
+              ...newState.properties,
+              [action.propertyId]: { ...prop, houses: 5 },
+            },
+            houseSupply: newState.houseSupply + 4,
+            hotelSupply: newState.hotelSupply - 1,
+          };
+          newState = applyCashChange(newState, playerId, -houseCost);
+          events.push({ type: 'HOTEL_BUILT', playerId, propertyId: action.propertyId, cost: houseCost });
+        } else {
+          // Build one house
+          const newHouses = prop.houses + 1;
+          newState = {
+            ...newState,
+            properties: {
+              ...newState.properties,
+              [action.propertyId]: { ...prop, houses: newHouses },
+            },
+            houseSupply: newState.houseSupply - 1,
+          };
+          newState = applyCashChange(newState, playerId, -houseCost);
+          events.push({ type: 'HOUSE_BUILT', playerId, propertyId: action.propertyId, houses: newHouses, cost: houseCost });
+        }
+        break;
+      }
+
+      case 'SELL_HOUSE': {
+        const playerId = state.turn.currentPlayerId;
+
+        if (state.turn.pendingDecision) {
+          return { state, events, errors: ['Cannot sell buildings while a decision is pending'] };
+        }
+
+        const validation = canSellHouse(state, playerId, action.propertyId);
+        if (!validation.ok) {
+          return { state, events, errors: [validation.reason ?? 'Cannot sell here'] };
+        }
+
+        const square = BOARD[action.propertyId];
+        const houseCost = square.houseCost!;
+        const refund = Math.floor(houseCost / 2);
+        const prop = state.properties[action.propertyId];
+
+        if (prop.houses === 5) {
+          // Sell hotel → 4 houses
+          newState = {
+            ...newState,
+            properties: {
+              ...newState.properties,
+              [action.propertyId]: { ...prop, houses: 4 },
+            },
+            hotelSupply: newState.hotelSupply + 1,
+            houseSupply: newState.houseSupply - 4,
+          };
+          newState = applyCashChange(newState, playerId, refund);
+          events.push({ type: 'HOTEL_SOLD', playerId, propertyId: action.propertyId, refund });
+        } else {
+          // Sell one house
+          const newHouses = prop.houses - 1;
+          newState = {
+            ...newState,
+            properties: {
+              ...newState.properties,
+              [action.propertyId]: { ...prop, houses: newHouses },
+            },
+            houseSupply: newState.houseSupply + 1,
+          };
+          newState = applyCashChange(newState, playerId, refund);
+          events.push({ type: 'HOUSE_SOLD', playerId, propertyId: action.propertyId, houses: newHouses, refund });
+        }
+        break;
+      }
+
       case 'END_TURN': {
         newState = advanceTurn(state);
         break;
@@ -660,7 +755,7 @@ function handleCardSquare(
  */
 export function createSetupState(): GameState {
   return {
-    version: 2,
+    version: 3,
     rngSeed: createSeed(),
     phase: 'setup',
     players: {},
@@ -676,6 +771,8 @@ export function createSetupState(): GameState {
       cardRentOverride: null,
     },
     kopitiamPot: 0,
+    houseSupply: HOUSE_SUPPLY,
+    hotelSupply: HOTEL_SUPPLY,
     chanceDeck: { drawPile: [], discardPile: [] },
     communityChestDeck: { drawPile: [], discardPile: [] },
     history: [],
@@ -754,7 +851,7 @@ function initGame(playerConfigs: Array<{ name: string; isAI: boolean }>, rngSeed
   const ccRng = createRNG(seed + 1);
 
   return {
-    version: 2,
+    version: 3,
     rngSeed: seed,
     phase: 'active',
     players,
@@ -770,6 +867,8 @@ function initGame(playerConfigs: Array<{ name: string; isAI: boolean }>, rngSeed
       cardRentOverride: null,
     },
     kopitiamPot: 0,
+    houseSupply: HOUSE_SUPPLY,
+    hotelSupply: HOTEL_SUPPLY,
     chanceDeck: createSeededDeck(CHANCE_CARDS.length, chanceRng),
     communityChestDeck: createSeededDeck(COMMUNITY_CHEST_CARDS.length, ccRng),
     history: [],

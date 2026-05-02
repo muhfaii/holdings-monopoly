@@ -15,7 +15,9 @@ export type Action =
   | { type: 'END_TURN' }
   | { type: 'RESOLVE_BANKRUPTCY_DEBT' }
   | { type: 'RESOLVE_BANKRUPTCY_ASSETS' }
-  | { type: 'ACKNOWLEDGE_CARD' };
+  | { type: 'ACKNOWLEDGE_CARD' }
+  | { type: 'BUY_HOUSE'; propertyId: PropertyId }
+  | { type: 'SELL_HOUSE'; propertyId: PropertyId };
 
 export interface ActionResult {
   state: GameState;

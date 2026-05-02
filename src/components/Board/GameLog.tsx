@@ -56,6 +56,14 @@ function formatEvent(event: any): string {
       return `${event.playerId} is bankrupt!`;
     case 'GAME_ENDED':
       return `Game over! ${event.winnerId} wins!`;
+    case 'HOUSE_BUILT':
+      return `${event.playerId} built a house on #${event.propertyId} ($${event.cost}) → ${event.houses} house(s)`;
+    case 'HOTEL_BUILT':
+      return `${event.playerId} built a hotel on #${event.propertyId} ($${event.cost})`;
+    case 'HOUSE_SOLD':
+      return `${event.playerId} sold a house on #${event.propertyId} (+$${event.refund}) → ${event.houses} house(s)`;
+    case 'HOTEL_SOLD':
+      return `${event.playerId} sold a hotel on #${event.propertyId} (+$${event.refund})`;
     default:
       return JSON.stringify(event);
   }

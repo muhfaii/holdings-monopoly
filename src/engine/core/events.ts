@@ -21,4 +21,9 @@ export type GameEvent =
   // ── Card events ─────────────────────────────────────────────────────────────
   | { type: 'CARD_DRAWN'; playerId: PlayerId; deckType: 'chance' | 'community-chest'; cardId: string; cardText: string }
   | { type: 'GOOJF_CARD_ACQUIRED'; playerId: PlayerId; deckType: 'chance' | 'community-chest' }
-  | { type: 'DECK_RESHUFFLED'; deckType: 'chance' | 'community-chest' };
+  | { type: 'DECK_RESHUFFLED'; deckType: 'chance' | 'community-chest' }
+  // ── Building events ──────────────────────────────────────────────────────────
+  | { type: 'HOUSE_BUILT'; playerId: PlayerId; propertyId: PropertyId; houses: number; cost: number }
+  | { type: 'HOTEL_BUILT'; playerId: PlayerId; propertyId: PropertyId; cost: number }
+  | { type: 'HOUSE_SOLD'; playerId: PlayerId; propertyId: PropertyId; houses: number; refund: number }
+  | { type: 'HOTEL_SOLD'; playerId: PlayerId; propertyId: PropertyId; refund: number };
