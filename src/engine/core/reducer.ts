@@ -1,12 +1,13 @@
-import type { GameState, PlayerId, PropertyId, PlayerState, PropertyState, Decision, DeckState, TurnState } from './state';
+import type { GameState, PlayerId, PlayerState, PropertyState, TurnState } from './state';
 import type { GameEvent } from './events';
 import type { Action, ActionResult } from './actions';
 import { createRNG, createSeed } from '../rng';
-import { BOARD, BOARD_SIZE, GO_SALARY, JAIL_FINE, JAIL_SQUARE, GO_TO_JAIL_SQUARE, KOPITIAM_SQUARE, STARTING_CASH, MAX_HOUSES } from '../data/board';
+import { BOARD, GO_SALARY, JAIL_FINE, JAIL_SQUARE, STARTING_CASH } from '../data/board';
+import { CHANCE_CARDS, COMMUNITY_CHEST_CARDS, CHANCE_GOOJF_INDEX, COMMUNITY_CHEST_GOOJF_INDEX } from '../data/cards';
+import { createSeededDeck, drawCard, discardCard, returnCardToDiscard } from '../rules/deck';
+import { resolveCard, rollDiceForUtility } from '../rules/cards';
 import { rollAndMove } from '../rules/movement';
-import { buyProperty, initAuction, placeBid, passBid } from '../rules/purchase';
 import { calculateRent } from '../rules/rent';
-import { payJailFine, useGetOutOfJailCard, checkJailExpiry } from '../rules/jail';
 import { detectBankruptcy } from '../rules/bankruptcy';
 
 export function reducer(state: GameState, action: Action): ActionResult {
@@ -238,6 +239,21 @@ export function reducer(state: GameState, action: Action): ActionResult {
         if (player.getOutOfJailCards <= 0) {
           return { state, events, errors: ['No Get Out of Jail Free card'] };
         }
+
+        // Determine which deck the card came from and return it to that discard pile
+        const sources = player.goojfCardSources;
+        const sourceDeck = sources[sources.length - 1]; // pop last (most recently acquired)
+        const newSources = sources.slice(0, -1);
+
+        let updatedChanceDeck = state.chanceDeck;
+        let updatedCommunityChestDeck = state.communityChestDeck;
+
+        if (sourceDeck === 'chance') {
+          updatedChanceDeck = returnCardToDiscard(state.chanceDeck, CHANCE_GOOJF_INDEX);
+        } else if (sourceDeck === 'community-chest') {
+          updatedCommunityChestDeck = returnCardToDiscard(state.communityChestDeck, COMMUNITY_CHEST_GOOJF_INDEX);
+        }
+
         newState = {
           ...state,
           players: {
@@ -247,11 +263,161 @@ export function reducer(state: GameState, action: Action): ActionResult {
               inJail: false,
               jailTurns: 0,
               getOutOfJailCards: player.getOutOfJailCards - 1,
+              goojfCardSources: newSources,
             },
           },
+          chanceDeck: updatedChanceDeck,
+          communityChestDeck: updatedCommunityChestDeck,
           turn: { ...state.turn, pendingDecision: null },
         };
         events.push({ type: 'JAIL_CARD_ESCAPE', playerId });
+        break;
+      }
+
+      case 'ACKNOWLEDGE_CARD': {
+        const decision = state.turn.pendingDecision;
+        if (!decision || decision.type !== 'AWAIT_CARD_ACKNOWLEDGEMENT') {
+          return { state, events, errors: ['No card acknowledgement pending'] };
+        }
+
+        const { playerId, triggerLanding } = decision;
+
+        // Clear the card decision and rent override first
+        newState = {
+          ...state,
+          turn: {
+            ...state.turn,
+            pendingDecision: null,
+            cardRentOverride: null,
+          },
+        };
+
+        if (triggerLanding) {
+          const position = newState.players[playerId].position;
+          const square = BOARD[position];
+          const rentOverride = state.turn.cardRentOverride;
+
+          switch (square.type) {
+            case 'property':
+            case 'railroad':
+            case 'utility': {
+              const property = newState.properties[position];
+              const playerLaps = newState.players[playerId].laps;
+
+              if (!property.ownerId) {
+                // Only offer purchase if player has completed at least one lap
+                if (playerLaps >= 1) {
+                  newState = {
+                    ...newState,
+                    turn: {
+                      ...newState.turn,
+                      pendingDecision: { type: 'AWAIT_BUY_DECISION', playerId, propertyId: position },
+                    },
+                  };
+                }
+                // If laps === 0: silently pass through, no purchase offer
+              } else if (property.ownerId !== playerId && !property.mortgaged) {
+                // Pay rent — potentially with card-specific override
+                if (rentOverride?.type === 'railroad_double') {
+                  // 2× normal railroad rent
+                  const { charges } = calculateRent(newState, playerId, position, 0);
+                  for (const ch of charges) {
+                    const doubled = ch.amount * 2;
+                    newState = applyCashChange(newState, ch.fromPlayerId, -doubled);
+                    newState = applyCashChange(newState, ch.toPlayerId, doubled);
+                    events.push({ type: 'RENT_PAID', fromPlayerId: ch.fromPlayerId, toPlayerId: ch.toPlayerId, propertyId: ch.propertyId, amount: doubled });
+                  }
+                  newState = checkAndApplyBankruptcy(newState, playerId, events);
+                } else if (rentOverride?.type === 'utility_10x') {
+                  // Roll fresh dice; pay 10× the result regardless of how many utilities owner has
+                  const seedOffset = newState.history.length + 3000;
+                  const { die1, die2, total } = rollDiceForUtility(newState.rngSeed + seedOffset);
+                  const amount = total * 10;
+                  const ownerId = property.ownerId!;
+                  events.push({ type: 'DICE_ROLLED', playerId, die1, die2, doubles: die1 === die2 });
+                  newState = applyCashChange(newState, playerId, -amount);
+                  newState = applyCashChange(newState, ownerId, amount);
+                  events.push({ type: 'RENT_PAID', fromPlayerId: playerId, toPlayerId: ownerId, propertyId: position, amount });
+                  newState = checkAndApplyBankruptcy(newState, playerId, events);
+                } else {
+                  // Normal rent — use the most recent dice roll from history
+                  const lastDice = [...newState.history].reverse().find(e => e.type === 'DICE_ROLLED' && e.playerId === playerId);
+                  const diceTotal = (lastDice?.type === 'DICE_ROLLED') ? lastDice.die1 + lastDice.die2 : 7;
+                  const { charges } = calculateRent(newState, playerId, position, diceTotal);
+                  for (const ch of charges) {
+                    newState = applyCashChange(newState, ch.fromPlayerId, -ch.amount);
+                    newState = applyCashChange(newState, ch.toPlayerId, ch.amount);
+                    events.push({ type: 'RENT_PAID', fromPlayerId: ch.fromPlayerId, toPlayerId: ch.toPlayerId, propertyId: ch.propertyId, amount: ch.amount });
+                  }
+                  newState = checkAndApplyBankruptcy(newState, playerId, events);
+                }
+              }
+              break;
+            }
+
+            case 'tax': {
+              const taxAmount = square.price;
+              newState = applyCashChange(newState, playerId, -taxAmount);
+              newState = addToKopitiam(newState, taxAmount);
+              events.push({ type: 'TAX_PAID', playerId, amount: taxAmount });
+              newState = checkAndApplyBankruptcy(newState, playerId, events);
+              break;
+            }
+
+            case 'kopitiam': {
+              const potAmount = newState.kopitiamPot;
+              if (potAmount > 0) {
+                newState = applyCashChange(newState, playerId, potAmount);
+                newState = { ...newState, kopitiamPot: 0 };
+                events.push({ type: 'KOPITIAM_COLLECTED', playerId, amount: potAmount });
+              }
+              break;
+            }
+
+            case 'go-to-jail': {
+              // GO_BACK can't land here in practice (no card squares forward of go-to-jail),
+              // but handle defensively.
+              newState = {
+                ...newState,
+                players: {
+                  ...newState.players,
+                  [playerId]: {
+                    ...newState.players[playerId],
+                    position: JAIL_SQUARE,
+                    inJail: true,
+                    jailTurns: 0,
+                  },
+                },
+                turn: {
+                  ...newState.turn,
+                  pendingDecision: { type: 'AWAIT_JAIL_DECISION', playerId },
+                },
+              };
+              events.push({ type: 'SENT_TO_JAIL', playerId });
+              break;
+            }
+
+            case 'chance':
+            case 'community-chest': {
+              // GO_BACK 3 from slot 36 (Chance) can land on slot 33 (Community Chest).
+              // Draw from that deck (one level of recursion allowed; GO_BACK cannot chain further).
+              newState = handleCardSquare(newState, playerId, square.type as 'chance' | 'community-chest', events, /* isNested */ true);
+              break;
+            }
+
+            // 'go', 'jail' — no action on landing
+            default:
+              break;
+          }
+        }
+
+        // Check bankruptcy triggered by cash cards (PAY_BANK, PAY_PER_BUILDING, PAY_PLAYERS)
+        // that were resolved immediately in resolveCard. If the player went negative there,
+        // they need to resolve it now.
+        if (!newState.turn.pendingDecision) {
+          newState = checkAndApplyBankruptcy(newState, playerId, events);
+        }
+
         break;
       }
 
@@ -342,13 +508,159 @@ export function reducer(state: GameState, action: Action): ActionResult {
   }
 }
 
+// ── Card drawing ──────────────────────────────────────────────────────────────
+
+/**
+ * Draw and resolve a card from the given deck type.
+ * Mutates `events` in place. Returns updated state with the card decision set.
+ *
+ * `isNested` is true when called from within ACKNOWLEDGE_CARD (GO_BACK landing
+ * on a card square). In that case, `triggerLanding` on the new card decision is
+ * always false — we don't allow further nesting.
+ */
+function handleCardSquare(
+  state: GameState,
+  playerId: PlayerId,
+  deckType: 'chance' | 'community-chest',
+  events: GameEvent[],
+  isNested = false,
+): GameState {
+  let newState = state;
+
+  const cardDefs = deckType === 'chance' ? CHANCE_CARDS : COMMUNITY_CHEST_CARDS;
+  const goojfIndex = deckType === 'chance' ? CHANCE_GOOJF_INDEX : COMMUNITY_CHEST_GOOJF_INDEX;
+  const currentDeck = deckType === 'chance' ? newState.chanceDeck : newState.communityChestDeck;
+
+  // Determine if the GOOJF card for this deck is currently held by any player
+  const isGoojfHeld = Object.values(newState.players).some(p =>
+    p.goojfCardSources.includes(deckType),
+  );
+  const heldGoojfIndices = isGoojfHeld ? [goojfIndex] : [];
+
+  // Seeded RNG for this draw: offset by history length to ensure uniqueness per action
+  const seedOffset = deckType === 'chance' ? 1000 : 2000;
+  const rng = createRNG(newState.rngSeed + newState.history.length + seedOffset);
+
+  // Check if we need to reshuffle (for the event)
+  const needsReshuffle = currentDeck.drawPile.length === 0;
+
+  const { cardIndex, deck: updatedDeck } = drawCard(currentDeck, rng, heldGoojfIndices);
+  const card = cardDefs[cardIndex];
+
+  // Update the deck in state
+  const isGoojfCard = card.effect.type === 'GET_OUT_OF_JAIL';
+  // Discard non-GOOJF cards immediately; GOOJF cards leave the deck entirely
+  const finalDeck = isGoojfCard ? updatedDeck : discardCard(updatedDeck, cardIndex);
+
+  newState = deckType === 'chance'
+    ? { ...newState, chanceDeck: finalDeck }
+    : { ...newState, communityChestDeck: finalDeck };
+
+  if (needsReshuffle) {
+    events.push({ type: 'DECK_RESHUFFLED', deckType });
+  }
+  events.push({ type: 'CARD_DRAWN', playerId, deckType, cardId: card.id, cardText: card.text });
+
+  // Resolve immediate card effects
+  const resolution = resolveCard(newState, playerId, card);
+  newState = resolution.state;
+  events.push(...resolution.events);
+
+  // Handle GET_OUT_OF_JAIL specially: push source deck onto player's sources
+  if (isGoojfCard) {
+    newState = {
+      ...newState,
+      players: {
+        ...newState.players,
+        [playerId]: {
+          ...newState.players[playerId],
+          goojfCardSources: [...newState.players[playerId].goojfCardSources, deckType],
+        },
+      },
+    };
+    events.push({ type: 'GOOJF_CARD_ACQUIRED', playerId, deckType });
+  }
+
+  // For ADVANCE_TO_NEAREST, set the rent override on TurnState before setting the decision
+  let cardRentOverride: TurnState['cardRentOverride'] = null;
+  if (card.effect.type === 'ADVANCE_TO_NEAREST' && !isNested) {
+    cardRentOverride = card.effect.category === 'railroad'
+      ? { type: 'railroad_double' }
+      : { type: 'utility_10x' };
+  }
+
+  // triggerLanding: movement cards require landing resolution after acknowledgement.
+  // In nested mode (GO_BACK landing on another card square) we skip further nesting.
+  const triggerLanding = resolution.triggerLanding && !isNested;
+
+  if (isGoojfCard) {
+    // GET_OUT_OF_JAIL: card is just held. No landing needed. Show the modal.
+    newState = {
+      ...newState,
+      turn: {
+        ...newState.turn,
+        cardRentOverride,
+        pendingDecision: {
+          type: 'AWAIT_CARD_ACKNOWLEDGEMENT',
+          playerId,
+          cardId: card.id,
+          cardText: card.text,
+          deckType,
+          triggerLanding: false,
+        },
+      },
+    };
+  } else if (card.effect.type === 'GO_TO_JAIL') {
+    // GO_TO_JAIL: player is already moved to jail in resolveCard.
+    // Show the card first, then on acknowledgement the jail decision will be set.
+    // Actually, we set the jail decision directly here — the card text is shown
+    // via the modal, and after acknowledgement the turn simply ends.
+    // We show the card modal; triggerLanding is false since jail is handled.
+    newState = {
+      ...newState,
+      turn: {
+        ...newState.turn,
+        cardRentOverride,
+        pendingDecision: {
+          type: 'AWAIT_CARD_ACKNOWLEDGEMENT',
+          playerId,
+          cardId: card.id,
+          cardText: card.text,
+          deckType,
+          triggerLanding: false,
+        },
+      },
+    };
+  } else {
+    newState = {
+      ...newState,
+      turn: {
+        ...newState.turn,
+        cardRentOverride,
+        pendingDecision: {
+          type: 'AWAIT_CARD_ACKNOWLEDGEMENT',
+          playerId,
+          cardId: card.id,
+          cardText: card.text,
+          deckType,
+          triggerLanding,
+        },
+      },
+    };
+  }
+
+  return newState;
+}
+
+// ── Setup state ───────────────────────────────────────────────────────────────
+
 /**
  * Create a fresh state in the 'setup' phase. The store boots into this state
  * so the engine has a single source of truth from the very first frame.
  */
 export function createSetupState(): GameState {
   return {
-    version: 1,
+    version: 2,
     rngSeed: createSeed(),
     phase: 'setup',
     players: {},
@@ -361,6 +673,7 @@ export function createSetupState(): GameState {
       pendingDecision: null,
       hasRolledThisTurn: false,
       jailRoll: false,
+      cardRentOverride: null,
     },
     kopitiamPot: 0,
     chanceDeck: { drawPile: [], discardPile: [] },
@@ -401,6 +714,7 @@ function validatePlayerNames(rawNames: string[]): { names: string[]; errors: str
 }
 
 function initGame(playerConfigs: Array<{ name: string; isAI: boolean }>, rngSeed?: number): GameState {
+  const seed = rngSeed ?? createSeed();
   const players: Record<string, PlayerState> = {};
   const playerIds: string[] = [];
   for (let i = 0; i < playerConfigs.length; i++) {
@@ -417,6 +731,7 @@ function initGame(playerConfigs: Array<{ name: string; isAI: boolean }>, rngSeed
       inJail: false,
       jailTurns: 0,
       getOutOfJailCards: 0,
+      goojfCardSources: [],
       properties: [],
       bankrupt: false,
     };
@@ -434,11 +749,13 @@ function initGame(playerConfigs: Array<{ name: string; isAI: boolean }>, rngSeed
     }
   }
 
-  const deck = createShuffledDeck(16);
+  // Use seeded RNG for both decks — different offsets so they shuffle independently
+  const chanceRng = createRNG(seed);
+  const ccRng = createRNG(seed + 1);
 
   return {
-    version: 1,
-    rngSeed: rngSeed ?? createSeed(),
+    version: 2,
+    rngSeed: seed,
     phase: 'active',
     players,
     properties,
@@ -450,23 +767,14 @@ function initGame(playerConfigs: Array<{ name: string; isAI: boolean }>, rngSeed
       pendingDecision: null,
       hasRolledThisTurn: false,
       jailRoll: false,
+      cardRentOverride: null,
     },
     kopitiamPot: 0,
-    chanceDeck: deck,
-    communityChestDeck: { ...deck },
+    chanceDeck: createSeededDeck(CHANCE_CARDS.length, chanceRng),
+    communityChestDeck: createSeededDeck(COMMUNITY_CHEST_CARDS.length, ccRng),
     history: [],
     winner: null,
   };
-}
-
-function createShuffledDeck(size: number): DeckState {
-  const cards = Array.from({ length: size }, (_, i) => i);
-  // Fisher-Yates shuffle with simple deterministic approach
-  for (let i = cards.length - 1; i > 0; i--) {
-    const j = Math.floor(Math.random() * (i + 1));
-    [cards[i], cards[j]] = [cards[j], cards[i]];
-  }
-  return { drawPile: cards, discardPile: [] };
 }
 
 function handleRollDice(state: GameState, events: GameEvent[]): { state: GameState } {
@@ -607,7 +915,7 @@ function handleRollDice(state: GameState, events: GameEvent[]): { state: GameSta
       }
       case 'chance':
       case 'community-chest': {
-        // Card decks deferred to Phase 2
+        newState = handleCardSquare(newState, playerId, square.type, events);
         break;
       }
       case 'kopitiam': {
@@ -625,6 +933,8 @@ function handleRollDice(state: GameState, events: GameEvent[]): { state: GameSta
 
   return { state: newState };
 }
+
+// ── Helper functions ──────────────────────────────────────────────────────────
 
 function applyCashChange(state: GameState, playerId: PlayerId, amount: number): GameState {
   return {
@@ -686,6 +996,7 @@ function advanceTurn(state: GameState): GameState {
       pendingDecision,
       hasRolledThisTurn: false,
       jailRoll: false,
+      cardRentOverride: null,
     },
   };
 }

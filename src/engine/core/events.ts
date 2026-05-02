@@ -17,4 +17,8 @@ export type GameEvent =
   | { type: 'JAIL_CARD_ESCAPE'; playerId: PlayerId }
   | { type: 'JAIL_TIME_SERVED'; playerId: PlayerId }
   | { type: 'PLAYER_BANKRUPT'; playerId: PlayerId; creditorId: PlayerId | null }
-  | { type: 'GAME_ENDED'; winnerId: PlayerId };
+  | { type: 'GAME_ENDED'; winnerId: PlayerId }
+  // ── Card events ─────────────────────────────────────────────────────────────
+  | { type: 'CARD_DRAWN'; playerId: PlayerId; deckType: 'chance' | 'community-chest'; cardId: string; cardText: string }
+  | { type: 'GOOJF_CARD_ACQUIRED'; playerId: PlayerId; deckType: 'chance' | 'community-chest' }
+  | { type: 'DECK_RESHUFFLED'; deckType: 'chance' | 'community-chest' };
