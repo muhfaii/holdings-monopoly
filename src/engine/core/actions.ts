@@ -1,4 +1,4 @@
-import type { PlayerId, PropertyId, GameState, Decision } from './state';
+import type { PlayerId, PropertyId, GameState } from './state';
 import type { GameEvent } from './events';
 
 export type Action =
@@ -14,7 +14,8 @@ export type Action =
   | { type: 'USE_JAIL_CARD' }
   | { type: 'END_TURN' }
   | { type: 'RESOLVE_BANKRUPTCY_DEBT' }
-  | { type: 'RESOLVE_BANKRUPTCY_ASSETS' };
+  | { type: 'RESOLVE_BANKRUPTCY_ASSETS' }
+  | { type: 'ACKNOWLEDGE_CARD' };
 
 export interface ActionResult {
   state: GameState;

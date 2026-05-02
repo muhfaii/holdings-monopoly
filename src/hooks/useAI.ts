@@ -84,6 +84,10 @@ export function useAI() {
           case 'AWAIT_BANKRUPTCY_LIQUIDATION':
             dispatch({ type: 'RESOLVE_BANKRUPTCY_DEBT' });
             break;
+
+          case 'AWAIT_CARD_ACKNOWLEDGEMENT':
+            dispatch({ type: 'ACKNOWLEDGE_CARD' });
+            break;
         }
         return;
       }

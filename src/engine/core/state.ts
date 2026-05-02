@@ -45,6 +45,11 @@ export interface PlayerState {
   inJail: boolean;
   jailTurns: number;
   getOutOfJailCards: number;
+  /**
+   * Tracks which deck each held Get Out of Jail Free card came from,
+   * so the card can be returned to the correct deck's discard pile when used.
+   */
+  goojfCardSources: Array<'chance' | 'community-chest'>;
   properties: PropertyId[];
   bankrupt: boolean;
 }
@@ -62,7 +67,16 @@ export type Decision =
   | { type: 'AWAIT_BUY_DECISION'; playerId: PlayerId; propertyId: PropertyId }
   | { type: 'AWAIT_AUCTION_BID'; propertyId: PropertyId; eligiblePlayerIds: PlayerId[]; currentBid: number; currentBidderId: PlayerId | null; passedPlayerIds: PlayerId[] }
   | { type: 'AWAIT_JAIL_DECISION'; playerId: PlayerId }
-  | { type: 'AWAIT_BANKRUPTCY_LIQUIDATION'; playerId: PlayerId; creditorId: PlayerId | null; debt: number };
+  | { type: 'AWAIT_BANKRUPTCY_LIQUIDATION'; playerId: PlayerId; creditorId: PlayerId | null; debt: number }
+  | {
+      type: 'AWAIT_CARD_ACKNOWLEDGEMENT';
+      playerId: PlayerId;
+      cardId: string;
+      cardText: string;
+      deckType: 'chance' | 'community-chest';
+      /** True when the card moved the player; landing logic runs on acknowledgement. */
+      triggerLanding: boolean;
+    };
 
 export interface TurnState {
   currentPlayerId: PlayerId;
@@ -74,6 +88,13 @@ export interface TurnState {
   hasRolledThisTurn: boolean;
   /** True if the roll this turn was a jail roll (doubles from jail = no bonus roll) */
   jailRoll: boolean;
+  /**
+   * Rent override set by ADVANCE_TO_NEAREST cards.
+   * 'railroad_double' → 2× normal railroad rent.
+   * 'utility_10x'     → fresh dice roll, pay 10× result.
+   * Cleared after the landing is resolved.
+   */
+  cardRentOverride: { type: 'railroad_double' } | { type: 'utility_10x' } | null;
 }
 
 export interface DeckState {
